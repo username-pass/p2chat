@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html>
+
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PeerJS Chat App</title>
+    <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+  </head>
+
+  <body>
+    <style>
+      :root {
+        --background-color: #4a445b;
+        --background-color-less-saturated: #494454;
+        --background-highlight: #7b748d;
+        --background-darker-color: #3F3C47;
+        --selected-color: #6E6880;
+        --text-color: #f6ebff;
+        --text-color-faded: #beb3c6;
+        --contrast-color: #9581eb;
+        --contrast-color-alt: #59526E;
+      }
+
+      body, html {
+        font-family: Verdana, sans-serif;
+        padding: 0;
+        width: 100%;
+        height: 100%;
+        margin: 0;
+      }
+
+      #sidebar {
+        position: fixed;
+        width: 200px;
+        height: 100%;
+        background: #000;
+        background-color: var(--background-color-less-saturated);
+        border-color: var(--contrast-color);
+        border-width: 0px;
+        border-right-style: solid;
+        border-right-width: 4px;
+      }
+
+      .sidebar-element {
+        width: 190px;
+        padding-top: 5px;
+        padding-bottom: 5px;
+        padding-left: 10px;
+        overflow-x: dot-dot-dash;
+        user-select: none;
+        color: var(--text-color);
+      }
+
+      #content-wrapper {
+        margin-left: 203px;
+        width: calc(100% - 203px);
+        height: 100%;
+        position: fixed;
+        background-color: var(--background-color);
+        color: var(--text-color);
+        overflow: auto;
+        z-index: 1;
+      }
+
+      .message-container {
+        width: 100%;
+        position: absolute;
+        bottom: 5px;
+      }
+
+      #message {
+        width: 99%;
+      }
+
+    </style>
+    <div id="sidebar">
+      <div class="sidebar-element">Select User <br>(coming soon)</div>
+      <div class="sidebar-element"><label>Your ID:</label><input type="text" id="your-id" readonly><button onclick="generatePeerId()">Generate ID</button><button onclick="copyIdToClipboard()">Copy ID</button></div>
+      <div class="sidebar-element"><label>input ID:</label><input type="text" id="other-id"></div>
+      <div class="sidebar-element">Connected:<input type="checkbox" onclick="return false;" onkeydown="e = e || window.event; if(e.keyCode !== 9) return false;" id="connection-indicator" /></div>
+    </div>
+    <div id="content-wrapper">
+      <div id="chat-history"></div>
+      <div class="message-container"><input type="text" id="message" placeholder="message" onkeypress="sendMessage(event)"></div>
+    </div>
+    <script>
+      var peer = new Peer();
+      var conn;
+      peer.on('open', function(id) {
+        document.getElementById('your-id').value = id;
+      });
+      peer.on('connection', function(connection) {
+        conn = connection;
+        setConnectionIndicator(true);
+        conn.on('data', function(data) {
+          doData(data);
+        });
+      });
+      peer.on('close', function() {
+        setConnectionIndicator(false);
+      });
+      peer.on('disconnected', function() {
+        setConnectionIndicator(false);
+      });
+      peer.on('error', function() {
+        setConnectionIndicator(false);
+      });
+
+      function generatePeerId() {
+        var newPeerId = prompt('Enter your desired peer ID (alphanumeric characters, dashes, and underscores are allowed):');
+        peer = new Peer(newPeerId);
+      }
+
+      function copyIdToClipboard() {
+        var copyText = document.getElementById('your-id');
+        copyText.select();
+        document.execCommand('copy');
+        alert('ID copied to clipboard!');
+      }
+
+      function sendMessage(e) {
+        if (e.key != "Enter") return;
+        var message = document.getElementById('message').value;
+        if (conn && message) {
+          conn.send({
+            message: message,
+            ok: true
+          });
+          displayMessage('You: ' + message);
+          document.getElementById('message').value = '';
+        }
+      }
+
+      function doData(data) {
+        console.log(data);
+        if (data.ok) displayMessage(data.message);
+      }
+
+      function setConnectionIndicator(status) {
+        document.getElementById("connection-indicator").checked = status;
+      }
+
+      function displayMessage(message) {
+        var chatHistory = document.getElementById('chat-history');
+        var messageElement = document.createElement('p');
+        messageElement.textContent = message;
+        chatHistory.appendChild(messageElement);
+      }
+      document.getElementById('other-id').addEventListener('input', function(event) {
+        var otherPeerId = event.target.value;
+        if (otherPeerId) {
+          conn = peer.connect(otherPeerId);
+          conn.on('open', function() {
+            displayMessage('Connection established with ' + otherPeerId);
+          });
+          conn.on('data', function(data) {
+            displayMessage('Other: ' + data);
+          });
+        }
+      });
+
+    </script>
+  </body>
+
+</html>
+
