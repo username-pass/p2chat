@@ -1,0 +1,636 @@
+<!DOCTYPE html>
+<html>
+
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PeerJS Chat App</title>
+    <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+  </head>
+
+  <body>
+    <style>
+      :root {
+        --background-color: #4a445b;
+        --background-color-less-saturated: #494454;
+        --background-highlight: #7b748d;
+        --background-darker-color: #3F3C47;
+        --selected-color: #6E6880;
+        --text-color: #f6ebff;
+        --text-color-faded: #beb3c6;
+        --contrast-color: #9581eb;
+        --contrast-color-alt: #59526E;
+      }
+
+      body,
+      html {
+        font-family: Verdana, sans-serif;
+        padding: 0;
+        width: 100%;
+        height: 100%;
+        margin: 0;
+      }
+
+      #sidebar {
+        position: fixed;
+        width: 200px;
+        height: 100%;
+        background: #000;
+        background-color: var(--background-color-less-saturated);
+        border-color: var(--contrast-color);
+        border-width: 0px;
+        border-right-style: solid;
+        border-right-width: 4px;
+      }
+
+      .sidebar-element {
+        width: 190px;
+        padding-top: 5px;
+        padding-bottom: 5px;
+        padding-left: 10px;
+        overflow-x: dot-dot-dash;
+        user-select: none;
+        color: var(--text-color);
+      }
+
+      #content-wrapper {
+        margin-left: 203px;
+        width: calc(100% - 203px);
+        height: 100%;
+        position: fixed;
+        background-color: var(--background-color);
+        color: var(--text-color);
+        overflow: auto;
+        z-index: 1;
+      }
+
+      .message-container {
+        width: 100%;
+        position: absolute;
+        bottom: 5px;
+      }
+
+      #message {
+        width: 99%;
+      }
+
+      #login-prompt-wrapper {
+        width: 100%;
+        height: 100%;
+        position: absolute;
+        z-index: 100;
+        backdrop-filter: blur(5px);
+      }
+
+      #login-prompt {
+        width: 300px;
+        height: 200px;
+        background-color: var(--background-color);
+        border: 5px solid var(--contrast-color);
+        border-radius: 5px;
+        position: absolute;
+        left: calc(50% - 150px);
+        top: calc(50% - 100px);
+      }
+
+      .login-btn {
+        width: 50%;
+        height: 50%;
+        left: 25%;
+        top: 25%;
+        position: relative;
+        border-style: solid;
+        border-color: var(--background-color-highlight);
+        background-color: var(--contrast-color);
+      }
+
+      .login-btn:hover {
+        background-color: var(--text-color);
+      }
+
+    </style>
+    <div id="sidebar">
+      <div class="sidebar-element">Select User <br>(coming soon)</div>
+      <div class="sidebar-element"><label>Your ID:</label><input type="text" id="your-id" readonly><button onclick="generatePeerId()">Generate ID</button><button onclick="copyIdToClipboard()">Copy ID</button></div>
+      <div class="sidebar-element"><label>input ID:</label><input type="text" id="other-id"></div>
+      <div class="sidebar-element">Connected:<input type="checkbox" onclick="return false;" onkeydown="e = e || window.event; if(e.keyCode !== 9) return false;" id="connection-indicator" /></div>
+    </div>
+    <div id="content-wrapper">
+      <div id="chat-history"></div>
+      <div class="message-container"><input type="text" id="message" placeholder="message" onkeypress="sendMessage(event)"></div>
+    </div>
+    <script id="login">
+      class CryptoHelper {
+        async signMessage(message, privateKey) {
+          try {
+            const signature = await crypto.subtle.sign({
+                name: "ECDSA",
+                hash: {
+                  name: "SHA-256"
+                },
+              },
+              privateKey,
+              new TextEncoder().encode(message)
+            );
+
+            return signature;
+          } catch (error) {
+            console.error("Error signing message:", error);
+          }
+        }
+
+        async verifySignature(message, signature, publicKey) {
+          try {
+            const isVerified = await crypto.subtle.verify({
+                name: "ECDSA",
+                hash: {
+                  name: "SHA-256"
+                },
+              },
+              publicKey,
+              signature,
+              new TextEncoder().encode(message)
+            );
+
+            return isVerified;
+          } catch (error) {
+            console.error("Error verifying signature:", error);
+          }
+        }
+        async generateHMACKey(password, salt) {
+          try {
+            const passwordBuffer = new TextEncoder().encode(password);
+            const saltBuffer = new TextEncoder().encode(salt);
+
+            const importedKey = await crypto.subtle.importKey(
+              "raw",
+              passwordBuffer, {
+                name: "PBKDF2"
+              },
+              false,
+              ["deriveKey"]
+            );
+
+            const derivedKey = await crypto.subtle.deriveKey({
+                name: "PBKDF2",
+                salt: saltBuffer,
+                iterations: 100000,
+                hash: "SHA-256",
+              },
+              importedKey, {
+                name: "HMAC",
+                hash: "SHA-256"
+              },
+              true,
+              ["sign", "verify"]
+            );
+
+            return derivedKey;
+          } catch (error) {
+            console.error("Error generating HMAC key:", error);
+          }
+        }
+
+        async encrypt(data, key) {
+          try {
+            const iv = crypto.getRandomValues(new Uint8Array(16));
+            const encryptedData = await crypto.subtle.encrypt({
+                name: "AES-GCM",
+                iv: iv,
+              },
+              key,
+              new TextEncoder().encode(data)
+            );
+
+            return {
+              iv: iv,
+              data: new Uint8Array(encryptedData)
+            };
+          } catch (error) {
+            console.error("Error encrypting data:", error);
+          }
+        }
+
+        async decrypt(encryptedData, key) {
+          try {
+            const decryptedData = await crypto.subtle.decrypt({
+                name: "AES-GCM",
+                iv: encryptedData.iv,
+              },
+              key,
+              encryptedData.data
+            );
+
+            return new TextDecoder().decode(decryptedData);
+          } catch (error) {
+            console.error("Error decrypting data:", error);
+          }
+        }
+        async generateKeyPair() {
+          try {
+            const keyPair = await crypto.subtle.generateKey({
+                name: "ECDSA",
+                namedCurve: "P-256",
+              },
+              true,
+              ["sign", "verify"]
+            );
+
+            return keyPair;
+          } catch (error) {
+            console.error("Error generating key pair:", error);
+          }
+        }
+        async exportPublicKey(keyPair) {
+          try {
+            const publicKey = await crypto.subtle.exportKey(
+              "spki",
+              keyPair.publicKey
+            );
+            return publicKey;
+          } catch (error) {
+            console.error("Error exporting public key:", error);
+          }
+        }
+        async importPublicKey(publicKey) {
+          try {
+            const importedKey = await crypto.subtle.importKey(
+              "spki",
+              publicKey, {
+                name: "ECDSA",
+                namedCurve: "P-256"
+              },
+              true,
+              ["verify"]
+            );
+
+            return importedKey;
+          } catch (error) {
+            console.error("Error importing public key:", error);
+          }
+        }
+        async exportPublicKeyAsString(keyPair) {
+          try {
+            const publicKey = await crypto.subtle.exportKey(
+              "spki",
+              keyPair.publicKey
+            );
+            const publicKeyString = this.arrayBufferToBase64(publicKey);
+
+            return publicKeyString;
+          } catch (error) {
+            console.error("Error exporting public key:", error);
+          }
+        }
+        arrayBufferToBase64(buffer) {
+          const binary = String.fromCharCode(...new Uint8Array(buffer));
+          return btoa(binary);
+        }
+      }
+      class FileHandlerLibrary {
+        constructor() {
+          this.files = {};
+          this.fs = null;
+          this.databaseName = "p2DB";
+          this.databaseVersion = 1;
+          this.objectStoreName = "items";
+          this.fileKeyName = "p2dat";
+          this.data = "";
+          this.defaultFileName = "user.dat";
+          this.seperator = String.fromCharCode(7);
+        }
+
+        get fileContents() {
+          return this.data;
+        }
+
+        async openDB() {
+          return new Promise((resolve, reject) => {
+            const request = window.indexedDB.open(
+              this.databaseName,
+              this.databaseVersion
+            );
+
+            request.onupgradeneeded = (event) =>
+              event.target.result.createObjectStore(this.objectStoreName, {
+                keyPath: "key",
+              });
+
+            request.onsuccess = (event) => resolve(event.target.result);
+            request.onerror = (event) => reject(event.target.error);
+          });
+        }
+
+        async dbget(key) {
+          try {
+            const db = await this.openDB();
+            const transaction = db.transaction(
+              [this.objectStoreName],
+              "readonly"
+            );
+            const objectStore = transaction.objectStore(this.objectStoreName);
+            const request = objectStore.get(key);
+
+            return new Promise((resolve, reject) => {
+              request.onsuccess = (event) =>
+                resolve(event.target.result?.value || null);
+              request.onerror = (event) => reject(event.target.error);
+            });
+          } catch (error) {
+            console.error("Error in get():", error);
+            throw error;
+          }
+        }
+
+        async dbset(key, value) {
+          try {
+            const db = await this.openDB();
+            const transaction = db.transaction(
+              [this.objectStoreName],
+              "readwrite"
+            );
+            const objectStore = transaction.objectStore(this.objectStoreName);
+            const request = objectStore.put({
+              key,
+              value
+            });
+
+            return new Promise((resolve, reject) => {
+              transaction.oncomplete = () => resolve();
+              request.onerror = (event) => reject(event.target.error);
+            });
+          } catch (error) {
+            console.error("Error in set():", error);
+            throw error;
+          }
+        }
+
+        async initFileSystem(hard = false) {
+          try {
+            const fileHandleOrUndefined = await this.dbget(this.fileKeyName);
+            if (fileHandleOrUndefined && !hard) {
+              this.fs = fileHandleOrUndefined;
+              await this.verifyPermission(this.fs[0], true);
+              const fileData = await this.readFileHandlerData(this.fs[0]);
+              if (fileData) {
+                this.data = fileData;
+              }
+              return;
+            }
+            this.fs = await window.showOpenFilePicker();
+            await this.dbset(this.fileKeyName, this.fs);
+            //await this.verifyPermission(this.fs[0], true);
+            const fileData = await this.readFileHandlerData(this.fs[0]);
+            if (fileData) {
+              this.data = fileData;
+            }
+            return;
+          } catch (error) {
+            if (error.name == "AbortError") {
+              alert("choose where to store the file");
+              const directoryHandle = await window.showDirectoryPicker();
+              this.fs = await directoryHandle.getFileHandle(this.defaultFileName, {
+                create: true
+              });
+              await this.dbset(this.fileKeyName, this.fs[0]);
+              console.log(this.fs[0]);
+            }
+            console.log(error.name, error.message);
+          }
+        }
+
+        async verifyPermission(fileHandle, readWrite) {
+          console.log(fileHandle);
+          const options = {
+            mode: readWrite ? "readwrite" : undefined
+          };
+          const permission = await fileHandle.queryPermission(options);
+          if (
+            permission === "granted" ||
+            (await fileHandle.requestPermission(options)) === "granted"
+          )
+            return true;
+          return false;
+        }
+
+        async readFileHandlerData(fileHandle) {
+          try {
+            const file = await fileHandle.getFile();
+            console.log(typeof file)
+            return await file.text();
+          } catch (error) {
+            console.log("Error reading file handler data:", error);
+            return null;
+          }
+        }
+
+        parseData() {
+          let dataArray = this.data.split(this.seperator);
+
+        }
+
+
+      }
+
+      var fs = new FileHandlerLibrary();
+      var cryptoHelper = new CryptoHelper();
+
+      async function login(callback) {
+        let wrapper = document.createElement("div");
+        wrapper.id = "login-prompt-wrapper";
+        document.body.appendChild(wrapper);
+        let loginPrompt = document.createElement("div");
+        loginPrompt.id = "login-prompt";
+        wrapper.appendChild(loginPrompt);
+        let loginBtn = document.createElement("button");
+        loginBtn.innerText = "login";
+        loginBtn.classList.add("login-btn");
+        loginPrompt.appendChild(loginBtn);
+        loginBtn.addEventListener("click", async () => {
+          alert("press cancel to create a file");
+          await fs.initFileSystem(confirm("hard init?"));
+          wrapper.remove();
+          console.log(fs.fileContents);
+          callback();
+        });
+      }
+      login(() => {
+        init();
+      });
+
+    </script>
+    <script>
+      /*
+        Connection data format:
+        
+        */
+
+      const defaultData = {
+        type: "default",
+        status: "message sent successfully",
+        ok: true,
+        message: "this is a test message",
+        sender: {
+          signedName: "---STUFF---",
+          insecureName: "Other"
+        }
+      }
+
+      const statuses = {
+        "200": {
+          type: "status",
+          ok: true,
+          status: "200 - all good"
+        },
+        "400": {
+          type: "status",
+          ok: false,
+          status: "400 - bad request"
+        },
+        "500": {
+          type: "status",
+          ok: false,
+          status: "500 - internal error"
+        }
+      };
+
+      class Sender {
+        constructor() {
+          this.id = "";
+          this.PGPPublic;
+          this.PGPPrivate;
+        }
+        setId(id) {
+          this.id = id;
+        }
+        get senderString() {
+          return this.id;
+        }
+      }
+
+      function init() {
+        var peer = new Peer();
+        var conn;
+        var sender = new Sender();
+        console.log(sender);
+
+
+        peer.on('open', (id) => {
+          //display id
+          document.getElementById('your-id').value = id;
+          sender.setId(id);
+        });
+        peer.on('connection', (connection) => {
+          conn = connection;
+          setConnectionIndicator(true);
+          displayMessage("status", "", 'connected to: ' + conn.peer);
+          conn.on('data', (data) => {
+            doData(data);
+          })
+        });
+        peer.on('disconnected', () => {
+          setConnectionIndicator(false);
+        })
+        peer.on('close', () => {
+          setConnectionIndicator(false);
+        });
+        peer.on('error', (error) => {
+          displayMessage('error', "", error)
+          setConnectionIndicator(false);
+        });
+
+        function resetPeerId(newId) {
+          peer.destroy();
+          peer = new Peer(newId);
+        }
+
+        function copyIdToClipboard() {
+          let copyText = document.getElementById('your-id');
+          copyText.select();
+          document.execCommand('copy');
+          alert('ID copied to clipboard!');
+        }
+
+        function sendMessage(e) {
+          if (e.key != "Enter") return;
+          let message = document.getElementById('message').value;
+          if (conn && message) {
+            sendData({
+              type: "message",
+              ok: true,
+              status: "200 message sent",
+              message: message
+            })
+            displayMessage("message", "you", message);
+            document.getElementById('message').value = '';
+          }
+        }
+
+        function sendData(data) {
+          if (!conn) return;
+          let toSend = data || statuses["500"];
+          toSend.sender = sender;
+          conn.send(toSend);
+
+        }
+
+        function doData(data) {
+          console.log("received data", data);
+          if (typeof data == "String") {
+            displayMessage("data", "unkown", data);
+            return;
+          }
+          switch (data.type) {
+            case "command":
+              execCommand(data.command);
+              break;
+            default:
+              displayMesssage(data.type, data.sender, data[data.type]);
+              break;
+          }
+        }
+
+        function displayMessage(type = "data", sender = "unknown", data = "") {
+          let chatHistory = document.getElementById("chat-history");
+          let messageContainer = document.createElement("div");
+          messageContainer.classList.add("message-container");
+          let senderElement = document.createElement("span");
+          senderElement.classList.add("message-sender-element");
+          senderElement.textContent = sender.senderString;
+          let messageTypeElement = document.createElement("span");
+          messageTypeElement.classList.add("message-type-element");
+          messageTypeElement.textContent = type;
+          let messageElement = document.createElement("span");
+          messageElement.classList.add("message-element");
+          messageElement.textContent = data;
+          messageElement.appendChild(messageTypeElement);
+          messageElement.appendChild(senderElement);
+          messageContainer.appendChild(messageElement);
+          chatHistory.appendChild(messageContainer);
+        }
+
+
+        function setConnectionIndicator(status) {
+          document.getElementById("connection-indicator").checked = status;
+        }
+
+
+
+        document.getElementById('other-id').addEventListener('input', function(event) {
+          var otherPeerId = event.target.value;
+          if (otherPeerId) {
+            conn = peer.connect(otherPeerId);
+            conn.on('open', function() {
+              displayMessage("status", "", 'Connection established with ' + otherPeerId);
+            });
+            conn.on('data', function(data) {
+              doData(data)
+            });
+          }
+        });
+      }
+
+    </script>
+  </body>
+
+</html>
