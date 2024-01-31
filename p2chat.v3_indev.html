@@ -111,13 +111,13 @@
     </style>
     <div id="sidebar">
       <div class="sidebar-element">Select User <br>(coming soon)</div>
-      <div class="sidebar-element"><label>Your ID:</label><input type="text" id="your-id" readonly><button onclick="generatePeerId()">Generate ID</button><button onclick="copyIdToClipboard()">Copy ID</button></div>
+      <div class="sidebar-element"><label>Your ID:</label><input type="text" id="your-id" readonly><button onclick="p2chat.resetPeerId()">Generate ID</button><button onclick="p2chat.copyIdToClipboard()">Copy ID</button></div>
       <div class="sidebar-element"><label>input ID:</label><input type="text" id="other-id"></div>
       <div class="sidebar-element">Connected:<input type="checkbox" onclick="return false;" onkeydown="e = e || window.event; if(e.keyCode !== 9) return false;" id="connection-indicator" /></div>
     </div>
     <div id="content-wrapper">
       <div id="chat-history"></div>
-      <div class="message-container"><input type="text" id="message" placeholder="message" onkeypress="sendMessage(event)"></div>
+      <div class="message-container"><input type="text" id="message" placeholder="message" onkeypress="p2chat.sendMessage(event)"></div>
     </div>
     <script id="login">
       class CryptoHelper {
@@ -298,6 +298,7 @@
           this.data = "";
           this.defaultFileName = "user.dat";
           this.seperator = String.fromCharCode(7);
+          this.isFileSystemInit = false;
         }
 
         get fileContents() {
@@ -370,32 +371,42 @@
             const fileHandleOrUndefined = await this.dbget(this.fileKeyName);
             if (fileHandleOrUndefined && !hard) {
               this.fs = fileHandleOrUndefined;
+              console.log("1",this.fs, this.fs[0]);
+              console.log(typeof this.fs, typeof this.fs[0]);
               await this.verifyPermission(this.fs[0], true);
               const fileData = await this.readFileHandlerData(this.fs[0]);
               if (fileData) {
                 this.data = fileData;
               }
-              return;
+              return 1;
             }
-            this.fs = await window.showOpenFilePicker();
-            await this.dbset(this.fileKeyName, this.fs);
-            //await this.verifyPermission(this.fs[0], true);
-            const fileData = await this.readFileHandlerData(this.fs[0]);
-            if (fileData) {
-              this.data = fileData;
+            if (confirm("create a new save file?")) {
+              const defaultOpts = {
+                "suggestedName": this.defaultFileName
+              }
+              const handle = await window.showSaveFilePicker(defaultOpts); // prompt "Save As"
+              this.fs = [handle];
+              await this.dbset(this.fileKeyName, this.fs);
+              console.log("3",this.fs, this.fs[0]);
+              console.log(typeof this.fs, typeof this.fs[0]);
+              return 3;
+            } else {
+              this.fs = await window.showOpenFilePicker();
+              console.log("2",this.fs, this.fs[0]);
+              console.log(typeof this.fs, typeof this.fs[0]);
+              await this.dbset(this.fileKeyName, this.fs);
+              //await this.verifyPermission(this.fs[0], true);
+              const fileData = await this.readFileHandlerData(this.fs[0]);
+              
+              if (fileData) {
+                this.data = fileData;
+                return 2;
+              }
             }
-            return;
+            return 0;
           } catch (error) {
-            if (error.name == "AbortError") {
-              alert("choose where to store the file");
-              const directoryHandle = await window.showDirectoryPicker();
-              this.fs = await directoryHandle.getFileHandle(this.defaultFileName, {
-                create: true
-              });
-              await this.dbset(this.fileKeyName, this.fs[0]);
-              console.log(this.fs[0]);
-            }
             console.log(error.name, error.message);
+            return 0;
           }
         }
 
@@ -428,43 +439,152 @@
           let dataArray = this.data.split(this.seperator);
 
         }
+        
+        async writeData(data) {
+            const writer = await this.fs.createWritable(); // request writable stream
+            await writer.write(new Blob([data])); // write the Blob directly
+            writer.close(); // end writing
+        }
 
 
       }
+      class P2chat {
+            constructor(fs) {
+                this.fs = fs;
+                this.peer;
+                this.conn;
+                this.keyPair = {
+                    "public": "---",
+                    "private": "---"
+                };
+                
+                this.id;
+            }
+            init() {
+                this.peer = new Peer();
+                this.peer.on('open', (id) => {
+                  //display id
+                  document.getElementById('your-id').value = id;
+                  this.id = id;
+                });
+                this.peer.on('connection', (connection) => {
+                  this.conn = connection;
+                  this.setConnectionIndicator(true);
+                  this.displayMessage("status", "", 'connected to: ' + this.conn.peer);
+                  this.conn.on('data', this.doData);
+                });
+                this.peer.on('disconnected', () => {
+                  this.setConnectionIndicator(false);
+                })
+                this.peer.on('close', () => {
+                  this.setConnectionIndicator(false);
+                });
+                this.peer.on('error', (error) => {
+                  this.displayMessage('error', "", error)
+                  this.setConnectionIndicator(false);
+                });
+                document.getElementById('other-id').addEventListener('input', function(event) {
+                  var otherPeerId = event.target.value;
+                  if (otherPeerId) {
+                      console.log(this);
+                    p2chat.conn = p2chat.peer.connect(otherPeerId);
+                    p2chat.conn.on('open', function() {
+                      p2chat.displayMessage("status", "", 'Connection established with ' + otherPeerId);
+                    });
+                    p2chat.conn.on('data', function(data) {
+                      p2chat.doData(data)
+                    });
+                  }
+                });
+            }
+            resetPeerId(newId) {
+              this.peer.destroy();
+              this.peer = new Peer(newId);
+            }
+    
+            copyIdToClipboard() {
+              let copyText = document.getElementById('your-id');
+              copyText.select();
+              document.execCommand('copy');
+              alert('ID copied to clipboard!');
+            }
+    
+            sendMessage(e) {
+              if (e.key != "Enter") return;
+              let message = document.getElementById('message').value;
+              if (p2chat.conn && message) {
+                p2chat.sendData({
+                  type: "message",
+                  ok: true,
+                  status: "200 message sent",
+                  message: message
+                })
+                p2chat.displayMessage("message", "you", message);
+                document.getElementById('message').value = '';
+              }
+            }
+    
+            sendData(data) {
+              if (!this.conn) return;
+              let toSend = data || statuses["500"];
+              toSend.sender = this.sender;
+              this.conn.send(toSend);
+    
+            }
+    
+            doData(data) {
+              console.log("received data", data);
+              console.log(this,p2chat);
+              if (typeof data == "String") {
+                p2chat.displayMessage("data", "unkown", data);
+                return;
+              }
+              switch (data.type) {
+                case "command":
+                  p2chat.execCommand(data.command);
+                  break;
+                default:
+                  p2chat.displayMesssage(data.type, data.sender, data[data.type]);
+                  break;
+              }
+            }
+    
+            displayMessage(type = "data", sender = "unknown", data = "") {
+              let chatHistory = document.getElementById("chat-history");
+              let messageContainer = document.createElement("div");
+              messageContainer.classList.add("message-element-container");
+              let senderElement = document.createElement("span");
+              senderElement.classList.add("message-sender-element");
+              senderElement.textContent = sender.senderString;
+              let messageTypeElement = document.createElement("span");
+              messageTypeElement.classList.add("message-type-element");
+              messageTypeElement.textContent = type;
+              let messageElement = document.createElement("span");
+              messageElement.classList.add("message-element");
+              messageElement.textContent = data;
+              messageElement.appendChild(messageTypeElement);
+              messageElement.appendChild(senderElement);
+              messageContainer.appendChild(messageElement);
+              chatHistory.appendChild(messageContainer);
+            }
+    
+    
+            setConnectionIndicator(status) {
+              document.getElementById("connection-indicator").checked = status;
+            }
+            login(id = this.id) {
+                
+            }
+            createKeyPair() {
+                
+            }
+        }
+    
 
       var fs = new FileHandlerLibrary();
       var cryptoHelper = new CryptoHelper();
-
-      async function login(callback) {
-        let wrapper = document.createElement("div");
-        wrapper.id = "login-prompt-wrapper";
-        document.body.appendChild(wrapper);
-        let loginPrompt = document.createElement("div");
-        loginPrompt.id = "login-prompt";
-        wrapper.appendChild(loginPrompt);
-        let loginBtn = document.createElement("button");
-        loginBtn.innerText = "login";
-        loginBtn.classList.add("login-btn");
-        loginPrompt.appendChild(loginBtn);
-        loginBtn.addEventListener("click", async () => {
-          alert("press cancel to create a file");
-          await fs.initFileSystem(confirm("hard init?"));
-          wrapper.remove();
-          console.log(fs.fileContents);
-          callback();
-        });
-      }
-      login(() => {
-        init();
-      });
-
-    </script>
-    <script>
-      /*
-        Connection data format:
-        
-        */
-
+      var p2chat = new P2chat(fs);
+      
       const defaultData = {
         type: "default",
         status: "message sent successfully",
@@ -494,6 +614,43 @@
         }
       };
 
+      async function login(callback) {
+        let wrapper = document.createElement("div");
+        wrapper.id = "login-prompt-wrapper";
+        document.body.appendChild(wrapper);
+        let loginPrompt = document.createElement("div");
+        loginPrompt.id = "login-prompt";
+        wrapper.appendChild(loginPrompt);
+        let loginBtn = document.createElement("button");
+        loginBtn.innerText = "login";
+        loginBtn.classList.add("login-btn");
+        loginPrompt.appendChild(loginBtn);
+        loginBtn.setAttribute("login", true);
+        loginBtn.addEventListener("click", async () => {
+          if (loginBtn.getAttribute("login")) {
+            let status = await fs.initFileSystem(confirm("hard init?"));
+            if (!status) {
+                return;
+            }
+            wrapper.remove();
+            console.log(fs.fileContents);
+            callback();
+          }
+        });
+      }
+      login(() => {
+          
+        p2chat.init();
+      });
+
+    </script>
+    <script>
+      /*
+        Connection data format:
+        
+        */
+
+
       class Sender {
         constructor() {
           this.id = "";
@@ -507,128 +664,9 @@
           return this.id;
         }
       }
+      
+      
 
-      function init() {
-        var peer = new Peer();
-        var conn;
-        var sender = new Sender();
-        console.log(sender);
-
-
-        peer.on('open', (id) => {
-          //display id
-          document.getElementById('your-id').value = id;
-          sender.setId(id);
-        });
-        peer.on('connection', (connection) => {
-          conn = connection;
-          setConnectionIndicator(true);
-          displayMessage("status", "", 'connected to: ' + conn.peer);
-          conn.on('data', (data) => {
-            doData(data);
-          })
-        });
-        peer.on('disconnected', () => {
-          setConnectionIndicator(false);
-        })
-        peer.on('close', () => {
-          setConnectionIndicator(false);
-        });
-        peer.on('error', (error) => {
-          displayMessage('error', "", error)
-          setConnectionIndicator(false);
-        });
-
-        function resetPeerId(newId) {
-          peer.destroy();
-          peer = new Peer(newId);
-        }
-
-        function copyIdToClipboard() {
-          let copyText = document.getElementById('your-id');
-          copyText.select();
-          document.execCommand('copy');
-          alert('ID copied to clipboard!');
-        }
-
-        function sendMessage(e) {
-          if (e.key != "Enter") return;
-          let message = document.getElementById('message').value;
-          if (conn && message) {
-            sendData({
-              type: "message",
-              ok: true,
-              status: "200 message sent",
-              message: message
-            })
-            displayMessage("message", "you", message);
-            document.getElementById('message').value = '';
-          }
-        }
-
-        function sendData(data) {
-          if (!conn) return;
-          let toSend = data || statuses["500"];
-          toSend.sender = sender;
-          conn.send(toSend);
-
-        }
-
-        function doData(data) {
-          console.log("received data", data);
-          if (typeof data == "String") {
-            displayMessage("data", "unkown", data);
-            return;
-          }
-          switch (data.type) {
-            case "command":
-              execCommand(data.command);
-              break;
-            default:
-              displayMesssage(data.type, data.sender, data[data.type]);
-              break;
-          }
-        }
-
-        function displayMessage(type = "data", sender = "unknown", data = "") {
-          let chatHistory = document.getElementById("chat-history");
-          let messageContainer = document.createElement("div");
-          messageContainer.classList.add("message-container");
-          let senderElement = document.createElement("span");
-          senderElement.classList.add("message-sender-element");
-          senderElement.textContent = sender.senderString;
-          let messageTypeElement = document.createElement("span");
-          messageTypeElement.classList.add("message-type-element");
-          messageTypeElement.textContent = type;
-          let messageElement = document.createElement("span");
-          messageElement.classList.add("message-element");
-          messageElement.textContent = data;
-          messageElement.appendChild(messageTypeElement);
-          messageElement.appendChild(senderElement);
-          messageContainer.appendChild(messageElement);
-          chatHistory.appendChild(messageContainer);
-        }
-
-
-        function setConnectionIndicator(status) {
-          document.getElementById("connection-indicator").checked = status;
-        }
-
-
-
-        document.getElementById('other-id').addEventListener('input', function(event) {
-          var otherPeerId = event.target.value;
-          if (otherPeerId) {
-            conn = peer.connect(otherPeerId);
-            conn.on('open', function() {
-              displayMessage("status", "", 'Connection established with ' + otherPeerId);
-            });
-            conn.on('data', function(data) {
-              doData(data)
-            });
-          }
-        });
-      }
 
     </script>
   </body>
