@@ -1,6 +1,9 @@
 # p2chat
 p2p chat
 
+# This version is deprecated. Please go to https://github.com/username-pass/p2pchat for the latest
+
+
 ## I will implement encryption soon, but, as of 2023-01-25, it is NOT encrypted
 
 ## Features:
